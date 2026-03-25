@@ -1,4 +1,6 @@
 import requests
+import json
+import os
 
 BOT_TOKEN = "8770078207:AAEx81u3m75I2p69QStnem78L6LMSVQZNpY"
 CHAT_ID = "819994547"
@@ -10,13 +12,22 @@ def send(msg):
     except:
         pass
 
+# 🔥 Track alerted stocks (duplicate avoid)
+FILE = "alerted.json"
+
+if os.path.exists(FILE):
+    with open(FILE, "r") as f:
+        alerted = json.load(f)
+else:
+    alerted = {}
+
 stocks = [
 "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
 "AXISBANK","KOTAKBANK","LT","BHARTIARTL","MARUTI",
 "TATAMOTORS","ADANIPORTS","ADANIENT","JSWSTEEL"
 ]
 
-msg = ""
+signals = []
 
 for stock in stocks:
     try:
@@ -36,19 +47,53 @@ for stock in stocks:
         price = float(d.get("pricecurrent", 0) or 0)
         open_price = float(d.get("open", 0) or 0)
         high = float(d.get("high", 0) or 0)
+        low = float(d.get("low", 0) or 0)
 
         if price == 0 or open_price == 0 or high == 0:
             continue
 
-        # 🔥 Open high + falling condition
-        if open_price >= high and price < open_price:
-            msg += f"🔻 {stock} falling from open high\nPrice: {price}\n\n"
+        # 🔥 Weak open (open ≈ high)
+        if abs(open_price - high) / high < 0.002:
 
-    except Exception as e:
-        print(f"Error in {stock}: {e}")
+            # 🔥 Price falling
+            if price < open_price:
+
+                # 🔥 Avoid duplicate alert
+                if stock in alerted:
+                    continue
+
+                entry = low
+                sl = high
+                target = low - (high - low)
+
+                move_strength = (open_price - price) / open_price
+
+                signals.append((stock, entry, sl, target, move_strength))
+
+                alerted[stock] = True
+
+    except:
         continue
 
-if msg.strip():
-    send("🔥 LIVE SHORT ALERT:\n\n" + msg)
+# 🔥 Sort strongest moves
+signals = sorted(signals, key=lambda x: x[4], reverse=True)[:3]
 
-print("✅ Script Finished")
+# 🔥 Telegram message
+msg = "🔥 TOP SHORT SETUPS:\n\n"
+
+for stock, entry, sl, target, strength in signals:
+    msg += (
+        f"🔻 {stock}\n"
+        f"Entry: {entry}\n"
+        f"SL: {sl}\n"
+        f"Target: {target}\n\n"
+    )
+
+if signals:
+    send(msg)
+
+# Save alerted list
+with open(FILE, "w") as f:
+    json.dump(alerted, f)
+
+print("✅ Pro Scanner Done")
