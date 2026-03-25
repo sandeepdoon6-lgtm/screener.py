@@ -1,7 +1,16 @@
+from kiteconnect import KiteConnect
+from datetime import datetime, timedelta
 import requests
-import json
-import os
+import time
 
+# 🔑 Zerodha API
+api_key = "niztcepqqrlmr3h2"
+access_token = "YOUR_ACCESS_TOKEN"
+
+kite = KiteConnect(api_key=api_key)
+kite.set_access_token(access_token)
+
+# 📲 Telegram
 BOT_TOKEN = "8770078207:AAEx81u3m75I2p69QStnem78L6LMSVQZNpY"
 CHAT_ID = "819994547"
 
@@ -12,88 +21,87 @@ def send(msg):
     except:
         pass
 
-# 🔥 Track alerted stocks (duplicate avoid)
-FILE = "alerted.json"
-
-if os.path.exists(FILE):
-    with open(FILE, "r") as f:
-        alerted = json.load(f)
-else:
-    alerted = {}
-
+# 🔥 Stocks
 stocks = [
 "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC",
 "AXISBANK","KOTAKBANK","LT","BHARTIARTL","MARUTI",
 "TATAMOTORS","ADANIPORTS","ADANIENT","JSWSTEEL"
 ]
 
-signals = []
+data_store = {}
 
+print("⏳ Waiting till 9:20...")
+
+while datetime.now().strftime("%H:%M") < "09:20":
+    time.sleep(5)
+
+print("📊 Capturing first candle...")
+
+# 🔹 5-min candle capture
 for stock in stocks:
     try:
-        url = f"https://priceapi.moneycontrol.com/pricefeed/nse/equitycash/{stock}"
-        res = requests.get(url)
+        s = f"NSE:{stock}"
+        ltp = kite.ltp(s)
+        token = ltp[s]["instrument_token"]
 
-        if res.status_code != 200:
-            continue
+        candle = kite.historical_data(
+            token,
+            datetime.now().replace(hour=9, minute=15),
+            datetime.now().replace(hour=9, minute=20),
+            "5minute"
+        )[0]
 
-        data = res.json()
-
-        if "data" not in data or data["data"] is None:
-            continue
-
-        d = data["data"]
-
-        price = float(d.get("pricecurrent", 0) or 0)
-        open_price = float(d.get("open", 0) or 0)
-        high = float(d.get("high", 0) or 0)
-        low = float(d.get("low", 0) or 0)
-
-        if price == 0 or open_price == 0 or high == 0:
-            continue
-
-        # 🔥 Weak open (open ≈ high)
-        if abs(open_price - high) / high < 0.002:
-
-            # 🔥 Price falling
-            if price < open_price:
-
-                # 🔥 Avoid duplicate alert
-                if stock in alerted:
-                    continue
-
-                entry = low
-                sl = high
-                target = low - (high - low)
-
-                move_strength = (open_price - price) / open_price
-
-                signals.append((stock, entry, sl, target, move_strength))
-
-                alerted[stock] = True
+        data_store[stock] = {
+            "high": candle['high'],
+            "low": candle['low'],
+            "alert": 0
+        }
 
     except:
         continue
 
-# 🔥 Sort strongest moves
-signals = sorted(signals, key=lambda x: x[4], reverse=True)[:3]
+print("🚀 Live tracking started...")
 
-# 🔥 Telegram message
-msg = "🔥 TOP SHORT SETUPS:\n\n"
+# 🔥 LIVE LOOP
+while True:
+    for stock in data_store:
+        try:
+            s = f"NSE:{stock}"
+            cmp = kite.ltp(s)[s]["last_price"]
 
-for stock, entry, sl, target, strength in signals:
-    msg += (
-        f"🔻 {stock}\n"
-        f"Entry: {entry}\n"
-        f"SL: {sl}\n"
-        f"Target: {target}\n\n"
-    )
+            low = data_store[stock]["low"]
+            high = data_store[stock]["high"]
 
-if signals:
-    send(msg)
+            token = kite.ltp(s)[s]["instrument_token"]
 
-# Save alerted list
-with open(FILE, "w") as f:
-    json.dump(alerted, f)
+            past = kite.historical_data(
+                token,
+                datetime.now() - timedelta(minutes=30),
+                datetime.now(),
+                "5minute"
+            )
 
-print("✅ Pro Scanner Done")
+            avg_vol = sum([c['volume'] for c in past]) / len(past)
+            current_vol = past[-1]['volume']
+
+            # 🔻 BREAKDOWN
+            if cmp < low and current_vol > 2 * avg_vol:
+
+                if data_store[stock]["alert"] < 2:
+
+                    entry = low
+                    sl = high
+                    target = low - (high - low)
+
+                    send(
+                        f"🔻 {stock} ORB BREAKDOWN\n"
+                        f"Entry: {entry}\nSL: {sl}\nTarget: {target}\n"
+                        f"Volume Spike 🔥"
+                    )
+
+                    data_store[stock]["alert"] += 1
+
+        except:
+            continue
+
+    time.sleep(60)
